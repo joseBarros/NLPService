@@ -33,14 +33,17 @@ class NLPService:
     def remove_old_named_entities(self, article_id):
         article = self.article_collection.find_one({"_id": ObjectId(article_id)})
 
-        if article and 'entities' in article:
+        if article and 'namedEntities' in article:
+            # Remove each entity from the collection
             for entity_ref in article['namedEntities']:
-                self.named_entity_collection.delete_one({"_id": entity_ref.id})
+                # Ensure the entity_ref is a DBRef and delete the referenced document
+                if isinstance(entity_ref, DBRef):
+                    self.named_entity_collection.delete_one({"_id": entity_ref.id})
 
-        self.article_collection.update_one(
-            {"_id": ObjectId(article_id)},
-            {"$set": {"namedEntities": []}}
-        )
+            self.article_collection.update_one(
+                {"_id": ObjectId(article_id)},
+                {"$set": {"namedEntities": []}}  # Set the namedEntities array to empty
+            )
 
     def get_or_create_tag(self, label):
         tag = self.tag_collection.find_one({'label': label})
@@ -51,15 +54,16 @@ class NLPService:
             self.tag_collection.insert_one({'_id': tag_id, 'label': label})
             return DBRef('tag', tag_id)
 
-    def save_named_entity(self, text, start_char, end_char, tags, article_id):
+    def save_named_entity(self, text, start_char, end_char, tag, article_id):
         named_entity_id = ObjectId()
         named_entity_data = {
             '_id': named_entity_id,
             'text': text,
             'start_char': start_char,
             'end_char': end_char,
-            'tags': tags,  # Tags will be DBRefs,
-            'article': DBRef('article', article_id)
+            'article': DBRef('article', ObjectId(article_id)),
+            'tag': tag,
+            '_class': 'com.isec.jbarros.domain.NamedEntity'
         }
         self.named_entity_collection.insert_one(named_entity_data)
         return DBRef('named_entity', named_entity_id)
@@ -67,12 +71,14 @@ class NLPService:
     def save_entities_to_article(self, article_id, entities):
         entity_dbrefs = []
         for ent in entities:
-            tags = [self.get_or_create_tag(ent['label'])]
-            entity_dbrefs.append(self.save_named_entity(ent['text'], ent['start'], ent['end'], tags, article_id))
+            # Get the tag DBRef for the entity
+            tag = self.get_or_create_tag(ent['label'])
+            entity_dbrefs.append(self.save_named_entity(ent['text'], ent['start'], ent['end'], tag, article_id))
 
+        # Update article with new list of entity DBRefs
         self.article_collection.update_one(
             {"_id": ObjectId(article_id)},
-            {"$set": {"namedEntities": entity_dbrefs}}  # Replace old entities with the new ones
+            {"$set": {"namedEntities": entity_dbrefs}}
         )
 
     def get_model_tags(self, model_id):
@@ -81,7 +87,7 @@ class NLPService:
         if not nlp_model or 'tags' not in nlp_model:
             raise ValueError("Invalid model_id or no tags associated with the model")
 
-        # Retrieve all tag labels associated with this model
+        # get all tag labels from the model
         tag_refs = nlp_model.get('tags', [])
         tag_labels = []
         for tag_ref in tag_refs:
